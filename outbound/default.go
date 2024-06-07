@@ -2,6 +2,8 @@ package outbound
 
 import (
 	"context"
+	"github.com/sagernet/sing-box/common/usermanagement"
+	"github.com/sagernet/sing/common/auth"
 	"net"
 	"net/netip"
 	"os"
@@ -190,6 +192,11 @@ func NewDirectPacketConnection(ctx context.Context, router adapter.Router, this 
 }
 
 func CopyEarlyConn(ctx context.Context, conn net.Conn, serverConn net.Conn) error {
+	userIndex, loaded := auth.UserFromContext[int](ctx)
+	if loaded {
+		serverConn = ctx.Value("userManager").(*usermanagement.UserManager).UpdateTrafficUsage(userIndex, serverConn)
+	}
+
 	if cachedReader, isCached := conn.(N.CachedReader); isCached {
 		payload := cachedReader.ReadCached()
 		if payload != nil && !payload.IsEmpty() {

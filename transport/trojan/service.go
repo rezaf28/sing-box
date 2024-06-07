@@ -2,10 +2,11 @@ package trojan
 
 import (
 	"context"
-	"net"
-
+	"github.com/sagernet/sing-box/common/usermanagement"
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
+	"net"
+
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
@@ -20,43 +21,21 @@ type Handler interface {
 }
 
 type Service[K comparable] struct {
-	users           map[K][56]byte
-	keys            map[[56]byte]K
+	users           *usermanagement.UserManager
+	protocol        string
+	tag             string
 	handler         Handler
 	fallbackHandler N.TCPConnectionHandler
 }
 
 func NewService[K comparable](handler Handler, fallbackHandler N.TCPConnectionHandler) *Service[K] {
 	return &Service[K]{
-		users:           make(map[K][56]byte),
-		keys:            make(map[[56]byte]K),
 		handler:         handler,
 		fallbackHandler: fallbackHandler,
 	}
 }
 
-var ErrUserExists = E.New("user already exists")
-
-func (s *Service[K]) UpdateUsers(userList []K, passwordList []string) error {
-	users := make(map[K][56]byte)
-	keys := make(map[[56]byte]K)
-	for i, user := range userList {
-		if _, loaded := users[user]; loaded {
-			return ErrUserExists
-		}
-		key := Key(passwordList[i])
-		if oldUser, loaded := keys[key]; loaded {
-			return E.Extend(ErrUserExists, "password used by ", oldUser)
-		}
-		users[user] = key
-		keys[key] = user
-	}
-	s.users = users
-	s.keys = keys
-	return nil
-}
-
-func (s *Service[K]) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
+func (s *Service[K]) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata, protocol, tag string) error {
 	var key [KeyLength]byte
 	n, err := conn.Read(key[:])
 	if err != nil {
@@ -65,10 +44,15 @@ func (s *Service[K]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 		return s.fallback(ctx, conn, metadata, key[:n], E.New("bad request size"))
 	}
 
-	if user, loaded := s.keys[key]; loaded {
-		ctx = auth.ContextWithUser(ctx, user)
-	} else {
-		return s.fallback(ctx, conn, metadata, key[:], E.New("bad request"))
+	um := ctx.Value("userManager").(*usermanagement.UserManager)
+
+	if um.AddIP(protocol, tag, string(key[:]), metadata.Source.IPAddr().IP.String()) {
+		userid, err := um.GetUserId("trojan", string(key[:]))
+		if err == nil {
+			ctx = auth.ContextWithUser(ctx, userid)
+		} else {
+			return s.fallback(ctx, conn, metadata, key[:], E.New("bad request"))
+		}
 	}
 
 	err = rw.SkipN(conn, 2)

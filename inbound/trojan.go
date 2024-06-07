@@ -2,12 +2,10 @@ package inbound
 
 import (
 	"context"
-	"net"
-	"os"
-
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/mux"
 	"github.com/sagernet/sing-box/common/tls"
+	"github.com/sagernet/sing-box/common/usermanagement"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -19,6 +17,9 @@ import (
 	F "github.com/sagernet/sing/common/format"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+	"net"
+	"os"
+	"time"
 )
 
 var (
@@ -81,14 +82,19 @@ func NewTrojan(ctx context.Context, router adapter.Router, logger log.ContextLog
 		fallbackHandler = adapter.NewUpstreamContextHandler(inbound.fallbackConnection, nil, nil)
 	}
 	service := trojan.NewService[int](adapter.NewUpstreamContextHandler(inbound.newConnection, inbound.newPacketConnection, inbound), fallbackHandler)
-	err := service.UpdateUsers(common.MapIndexed(options.Users, func(index int, it option.TrojanUser) int {
-		return index
-	}), common.Map(options.Users, func(it option.TrojanUser) string {
-		return it.Password
-	}))
-	if err != nil {
-		return nil, err
+
+	um := ctx.Value("userManager").(*usermanagement.UserManager)
+	for _, user := range options.Users {
+		_, err := um.AddUser(um.GetValidId(), true, user.Name, user.Password,
+			"1", 1, "", "", 0, 0, 0, 0, 0, 0, nil, nil,
+			time.Now().Unix(), time.Now().Unix(), time.Now().Unix(), time.Now().Unix(), time.Now().Unix()+1000000000)
+		if err != nil {
+			return nil, err
+		}
 	}
+
+	err := error(nil)
+
 	if options.Transport != nil {
 		inbound.transport, err = v2ray.NewServerTransport(ctx, common.PtrValueOrDefault(options.Transport), inbound.tlsConfig, (*trojanTransportHandler)(inbound))
 		if err != nil {
@@ -162,7 +168,7 @@ func (h *Trojan) NewConnection(ctx context.Context, conn net.Conn, metadata adap
 			return err
 		}
 	}
-	return h.service.NewConnection(adapter.WithContext(ctx, &metadata), conn, adapter.UpstreamMetadata(metadata))
+	return h.service.NewConnection(adapter.WithContext(ctx, &metadata), conn, adapter.UpstreamMetadata(metadata), h.protocol, h.tag)
 }
 
 func (h *Trojan) NewPacketConnection(ctx context.Context, conn N.PacketConn, metadata adapter.InboundContext) error {
@@ -174,7 +180,7 @@ func (h *Trojan) newConnection(ctx context.Context, conn net.Conn, metadata adap
 	if !loaded {
 		return os.ErrInvalid
 	}
-	user := h.users[userIndex].Name
+	user := ctx.Value("userManager").(*usermanagement.UserManager).Users[userIndex].Username
 	if user == "" {
 		user = F.ToString(userIndex)
 	} else {
@@ -212,7 +218,7 @@ func (h *Trojan) newPacketConnection(ctx context.Context, conn N.PacketConn, met
 	if !loaded {
 		return os.ErrInvalid
 	}
-	user := h.users[userIndex].Name
+	user := ctx.Value("userManager").(*usermanagement.UserManager).Users[userIndex].Username
 	if user == "" {
 		user = F.ToString(userIndex)
 	} else {

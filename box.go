@@ -3,6 +3,8 @@ package box
 import (
 	"context"
 	"fmt"
+	"github.com/sagernet/sing-box/common/usermanagement"
+	dbMysql "github.com/sagernet/sing-box/common/usermanagement/database"
 	"io"
 	"os"
 	"runtime/debug"
@@ -56,6 +58,14 @@ func New(options Options) (*Box, error) {
 	}
 	ctx = service.ContextWithDefaultRegistry(ctx)
 	ctx = pause.WithDefaultManager(ctx)
+
+	userManagerOptions := common.PtrValueOrDefault(options.UserManager)
+	userManager := usermanagement.NewUserManager(userManagerOptions)
+	if userManagerOptions.Mysql.IsEnable {
+		go dbMysql.SyncUserData(userManager, userManagerOptions.Mysql)
+	}
+	ctx = context.WithValue(ctx, "userManager", userManager)
+
 	experimentalOptions := common.PtrValueOrDefault(options.Experimental)
 	applyDebugOptions(common.PtrValueOrDefault(experimentalOptions.Debug))
 	var needCacheFile bool
@@ -94,6 +104,7 @@ func New(options Options) (*Box, error) {
 		options.Inbounds,
 		options.PlatformInterface,
 	)
+
 	if err != nil {
 		return nil, E.Cause(err, "parse route options")
 	}
