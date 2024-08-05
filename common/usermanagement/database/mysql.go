@@ -199,9 +199,18 @@ func fetchUsersFromDB(db *sql.DB, SyncKey string, UserLimit uint16) (map[int]use
 	return users, nil
 }
 
-func UpdateServerData(db *sql.DB, userID int, trafficSend, trafficRecv, activatedAt, lastusage, updatedAt int64) error {
-	query := `UPDATE users SET TrafficSend = ?, TrafficRecv = ?, ActivatedAt = ?, LastUsageAt = ?, UpdatedAt = ? WHERE id = ?`
-	_, err := db.Exec(query, trafficSend, trafficRecv, activatedAt, lastusage, updatedAt, userID)
+func UpdateServerActivationTime(db *sql.DB, userID int, activatedAt int64) error {
+	query := `UPDATE users SET ActivatedAt = ? WHERE id = ?`
+	_, err := db.Exec(query, activatedAt, userID)
+	if err != nil {
+		return fmt.Errorf("failed to update activate time for user %d: %v", userID, err)
+	}
+	return nil
+}
+
+func UpdateServerData(db *sql.DB, userID int, trafficSend, trafficRecv, lastusage, updatedAt int64) error {
+	query := `UPDATE users SET TrafficSend = ?, TrafficRecv = ?, LastUsageAt = ?, UpdatedAt = ? WHERE id = ?`
+	_, err := db.Exec(query, trafficSend, trafficRecv, lastusage, updatedAt, userID)
 	if err != nil {
 		return fmt.Errorf("failed to update traffic data for user %d: %v", userID, err)
 	}
@@ -233,11 +242,17 @@ func IntervalSync(userManager *usermanagement.UserManager, db *sql.DB, SyncKey s
 					if user.TrafficRecv > 1 && user.ActivatedAt < 1 {
 						user.ActivatedAt = time.Now().Unix()
 						userManager.Users[user.ID].ActivatedAt = time.Now().Unix()
+						UpdateServerActivationTime(db, user.ID, time.Now().Unix())
 					}
-					err := UpdateServerData(db, user.ID, userManager.Users[user.ID].TrafficSend, userManager.Users[user.ID].TrafficRecv,
-						userManager.Users[user.ID].ActivatedAt, userManager.Users[user.ID].LastUsageAt, time.Now().Unix())
-					if err != nil {
-						log.Printf("Failed to update server data : %v", err)
+					if userManager.Users[user.ID].TrafficSend > user.TrafficSend && userManager.Users[user.ID].TrafficRecv > user.TrafficRecv {
+						err := UpdateServerData(db, user.ID, userManager.Users[user.ID].TrafficSend, userManager.Users[user.ID].TrafficRecv, userManager.Users[user.ID].LastUsageAt, time.Now().Unix())
+						if err != nil {
+							log.Printf("Failed to update server data : %v", err)
+						}
+					} else {
+						userManager.Users[user.ID].TrafficSend = user.TrafficSend
+						userManager.Users[user.ID].TrafficRecv = user.TrafficRecv
+						userManager.Users[user.ID].LastUsageAt = user.LastUsageAt
 					}
 				} else {
 					log.Printf("Failed to update user: %v", err)
