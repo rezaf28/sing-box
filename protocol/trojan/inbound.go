@@ -4,12 +4,14 @@ import (
 	"context"
 	"net"
 	"os"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/mux"
 	"github.com/sagernet/sing-box/common/tls"
+	"github.com/sagernet/sing-box/common/usermanagement"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -40,14 +42,18 @@ type Inbound struct {
 	fallbackAddr             M.Socksaddr
 	fallbackAddrTLSNextProto map[string]M.Socksaddr
 	transport                adapter.V2RayServerTransport
+	protocol                 string
+	tag                      string
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrojanInboundOptions) (adapter.Inbound, error) {
 	inbound := &Inbound{
-		Adapter: inbound.NewAdapter(C.TypeTrojan, tag),
-		router:  router,
-		logger:  logger,
-		users:   options.Users,
+		Adapter:  inbound.NewAdapter(C.TypeTrojan, tag),
+		router:   router,
+		logger:   logger,
+		protocol: C.TypeTrojan,
+		tag:      tag,
+		users:    options.Users,
 	}
 	if options.TLS != nil {
 		tlsConfig, err := tls.NewServer(ctx, logger, common.PtrValueOrDefault(options.TLS))
@@ -81,14 +87,18 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		fallbackHandler = adapter.NewUpstreamContextHandlerEx(inbound.fallbackConnection, nil)
 	}
 	service := trojan.NewService[int](adapter.NewUpstreamContextHandlerEx(inbound.newConnection, inbound.newPacketConnection), fallbackHandler, logger)
-	err := service.UpdateUsers(common.MapIndexed(options.Users, func(index int, it option.TrojanUser) int {
-		return index
-	}), common.Map(options.Users, func(it option.TrojanUser) string {
-		return it.Password
-	}))
-	if err != nil {
-		return nil, err
+	um := usermanagement.GetUserManagerSafe()
+	for _, user := range options.Users {
+		_, err := um.AddUser(um.GetValidId(), true, user.Name, user.Password,
+			"1", 1, "", "", 0, 0, 0, 0, 0, 0, nil, nil,
+			time.Now().Unix(), time.Now().Unix(), time.Now().Unix(), time.Now().Unix(), time.Now().Unix()+1000000000)
+		if err != nil {
+			return nil, err
+		}
 	}
+
+	err := error(nil)
+
 	if options.Transport != nil {
 		inbound.transport, err = v2ray.NewServerTransport(ctx, logger, common.PtrValueOrDefault(options.Transport), inbound.tlsConfig, (*inboundTransportHandler)(inbound))
 		if err != nil {
@@ -168,7 +178,7 @@ func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata a
 		}
 		conn = tlsConn
 	}
-	err := h.service.NewConnection(adapter.WithContext(ctx, &metadata), conn, metadata.Source, onClose)
+	err := h.service.NewConnection(adapter.WithContext(ctx, &metadata), conn, metadata.Source, onClose, h.protocol, h.tag)
 	if err != nil {
 		N.CloseOnHandshakeFailure(conn, onClose, err)
 		h.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", metadata.Source))
@@ -183,7 +193,7 @@ func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata ada
 		N.CloseOnHandshakeFailure(conn, onClose, os.ErrInvalid)
 		return
 	}
-	user := h.users[userIndex].Name
+	user := usermanagement.GetUserManagerSafe().Users[userIndex].Username
 	if user == "" {
 		user = F.ToString(userIndex)
 	} else {
@@ -201,7 +211,7 @@ func (h *Inbound) newPacketConnection(ctx context.Context, conn N.PacketConn, me
 		N.CloseOnHandshakeFailure(conn, onClose, os.ErrInvalid)
 		return
 	}
-	user := h.users[userIndex].Name
+	user := usermanagement.GetUserManagerSafe().Users[userIndex].Username
 	if user == "" {
 		user = F.ToString(userIndex)
 	} else {

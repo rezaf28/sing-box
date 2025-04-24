@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"net"
 
+	"github.com/sagernet/sing-box/common/usermanagement"
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -21,8 +22,9 @@ type Handler interface {
 }
 
 type Service[K comparable] struct {
-	users           map[K][56]byte
-	keys            map[[56]byte]K
+	users           *usermanagement.UserManager
+	protocol        string
+	tag             string
 	handler         Handler
 	fallbackHandler N.TCPConnectionHandlerEx
 	logger          logger.ContextLogger
@@ -30,36 +32,13 @@ type Service[K comparable] struct {
 
 func NewService[K comparable](handler Handler, fallbackHandler N.TCPConnectionHandlerEx, logger logger.ContextLogger) *Service[K] {
 	return &Service[K]{
-		users:           make(map[K][56]byte),
-		keys:            make(map[[56]byte]K),
 		handler:         handler,
 		fallbackHandler: fallbackHandler,
 		logger:          logger,
 	}
 }
 
-var ErrUserExists = E.New("user already exists")
-
-func (s *Service[K]) UpdateUsers(userList []K, passwordList []string) error {
-	users := make(map[K][56]byte)
-	keys := make(map[[56]byte]K)
-	for i, user := range userList {
-		if _, loaded := users[user]; loaded {
-			return ErrUserExists
-		}
-		key := Key(passwordList[i])
-		if oldUser, loaded := keys[key]; loaded {
-			return E.Extend(ErrUserExists, "password used by ", oldUser)
-		}
-		users[user] = key
-		keys[key] = user
-	}
-	s.users = users
-	s.keys = keys
-	return nil
-}
-
-func (s *Service[K]) NewConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc) error {
+func (s *Service[K]) NewConnection(ctx context.Context, conn net.Conn, source M.Socksaddr, onClose N.CloseHandlerFunc, protocol, tag string) error {
 	var key [KeyLength]byte
 	n, err := conn.Read(key[:])
 	if err != nil {
@@ -68,10 +47,14 @@ func (s *Service[K]) NewConnection(ctx context.Context, conn net.Conn, source M.
 		return s.fallback(ctx, conn, source, key[:n], E.New("bad request size"), onClose)
 	}
 
-	if user, loaded := s.keys[key]; loaded {
-		ctx = auth.ContextWithUser(ctx, user)
-	} else {
-		return s.fallback(ctx, conn, source, key[:], E.New("bad request"), onClose)
+	um := usermanagement.GetUserManagerSafe()
+	if um.AddIP(protocol, tag, string(key[:]), source.IPAddr().IP.String()) {
+		userid, err := um.GetUserId("trojan", string(key[:]))
+		if err == nil {
+			ctx = auth.ContextWithUser(ctx, userid)
+		} else {
+			return s.fallback(ctx, conn, source, key[:], E.New("bad request"), onClose)
+		}
 	}
 
 	err = rw.SkipN(conn, 2)

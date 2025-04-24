@@ -14,8 +14,10 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/common/tlsfragment"
+	"github.com/sagernet/sing-box/common/usermanagement"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/canceler"
@@ -262,7 +264,7 @@ func (m *ConnectionManager) connectionCopy(ctx context.Context, source net.Conn,
 			return
 		}
 	}
-	_, err := bufio.CopyWithCounters(destinationWriter, sourceReader, source, readCounters, writeCounters)
+	count, err := bufio.CopyWithCounters(destinationWriter, sourceReader, source, readCounters, writeCounters)
 	if err != nil {
 		common.Close(source, destination)
 	} else if duplexDst, isDuplex := destination.(N.WriteCloser); isDuplex {
@@ -272,6 +274,11 @@ func (m *ConnectionManager) connectionCopy(ctx context.Context, source net.Conn,
 		}
 	} else {
 		destination.Close()
+	}
+	// update the user's traffic usage
+	userIndex, loaded := auth.UserFromContext[int](ctx)
+	if loaded {
+		usermanagement.GetUserManagerSafe().UpdateTrafficUsage(userIndex, count, direction)
 	}
 	if done.Swap(true) {
 		onClose(err)

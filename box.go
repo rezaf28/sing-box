@@ -16,6 +16,8 @@ import (
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/common/taskmonitor"
 	"github.com/sagernet/sing-box/common/tls"
+	"github.com/sagernet/sing-box/common/usermanagement"
+	dbMysql "github.com/sagernet/sing-box/common/usermanagement/database"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/dns"
 	"github.com/sagernet/sing-box/dns/transport/local"
@@ -111,6 +113,13 @@ func New(options Options) (*Box, error) {
 	}
 
 	ctx = pause.WithDefaultManager(ctx)
+
+	userManagerOptions := common.PtrValueOrDefault(options.UserManager)
+	userManager := usermanagement.NewUserManager(userManagerOptions)
+	if userManagerOptions.Mysql.IsEnable {
+		go dbMysql.SyncUserData(userManager, userManagerOptions.Mysql)
+	}
+
 	experimentalOptions := common.PtrValueOrDefault(options.Experimental)
 	applyDebugOptions(common.PtrValueOrDefault(experimentalOptions.Debug))
 	var needCacheFile bool
